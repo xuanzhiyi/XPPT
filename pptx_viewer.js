@@ -5,6 +5,7 @@ let slides = [];
 let currentSlide = 0;
 let slideW = 960, slideH = 540;
 let themeColors = {};
+let presentationDefaults = {fontSize: 18, fontColor: null};  // Will be loaded from presentation.xml
 
 // ── colour helpers ────────────────────────────────────────────────────────────
 
@@ -130,6 +131,23 @@ function resolveTarget(base, target) {
     else parts.push(seg);
   }
   return parts.join('/');
+}
+
+// ── presentation defaults parsing ─────────────────────────────────────────
+
+function parsePresentationDefaults(presDoc, theme) {
+  const defaults = {fontSize: 18, fontColor: null};
+  // Read from defaultTextStyle > lvl1pPr > defRPr (first level defaults)
+  const defRPr = presDoc.querySelector('defaultTextStyle > lvl1pPr > defRPr');
+  if (defRPr) {
+    const sz = defRPr.getAttribute('sz');
+    if (sz) defaults.fontSize = parseInt(sz) / 100;  // sz is in hundredths of a point
+    const solidFill = defRPr.querySelector('solidFill');
+    if (solidFill) {
+      defaults.fontColor = resolveColorEl(solidFill, theme);
+    }
+  }
+  return defaults;
 }
 
 // ── theme parsing ─────────────────────────────────────────────────────────────
@@ -346,16 +364,16 @@ function parseTextBody(txBody, theme) {
 function parseRunProps(rPr, theme) {
   if (!rPr) return {fc:null, bold:false, italic:false, underline:false, strike:false, fontSize:null, fontFace:null};
   const solidFill = rPr.querySelector('solidFill');
-  const fc = resolveColorEl(solidFill, theme) || resolveColorEl(rPr.querySelector('solidFill'), theme);
+  const fc = resolveColorEl(solidFill, theme);
   const sz = rPr.getAttribute('sz');
   const latin = rPr.querySelector('latin');
   return {
-    fc,
+    fc,  // Color from solidFill (if present), or null to inherit
     bold:      rPr.getAttribute('b') === '1',
     italic:    rPr.getAttribute('i') === '1',
     underline: rPr.getAttribute('u') && rPr.getAttribute('u') !== 'none',
     strike:    rPr.getAttribute('strike') && rPr.getAttribute('strike') !== 'noStrike',
-    fontSize:  sz ? parseInt(sz)/100 : null,
+    fontSize:  sz ? parseInt(sz)/100 : null,  // Use document's font size
     fontFace:  latin?.getAttribute('typeface') || null,
     caps:      rPr.getAttribute('cap') === 'all' || rPr.getAttribute('cap') === 'small',
     smallCaps: rPr.getAttribute('cap') === 'small',
@@ -670,6 +688,8 @@ async function parsePptx(buffer, filename) {
   themeColors = await parseTheme(zip);
   const presXml = await zip.file('ppt/presentation.xml').async('string');
   const presDoc = new DOMParser().parseFromString(presXml, 'application/xml');
+  // Load presentation-level default text formatting
+  presentationDefaults = parsePresentationDefaults(presDoc, themeColors);
   const sldSz = presDoc.querySelector('sldSz');
   if (sldSz) {
     slideW = parseInt(sldSz.getAttribute('cx') || 9144000) / 9525;
@@ -911,8 +931,8 @@ function renderTextBody(text, container, shW, shH) {
       const bColor = para.buColor || (para.runs.find(function(r){ return r.fc; }) || {}).fc || null;
       if (bColor) b.style.color = bColor;
 
-      // Size: use explicit size from first run, or default to 24pt
-      const baseFontPt = (para.runs.find(function(r){ return r.fontSize; }) || {}).fontSize || 24;
+      // Size: use explicit size from first run, or presentation default, or 18pt
+      const baseFontPt = (para.runs.find(function(r){ return r.fontSize; }) || {}).fontSize || presentationDefaults.fontSize || 18;
       const bSize = baseFontPt * (para.buSzPct / 100);
       b.style.fontSize = bSize + 'pt';
 
@@ -926,11 +946,12 @@ function renderTextBody(text, container, shW, shH) {
       if (run.isBr) { pEl.appendChild(document.createElement('br')); continue; }
       if (!run.t) continue;
       const span = document.createElement('span');
-      // Default to 24pt if no size specified; PowerPoint default is typically 18pt but rendered larger
-      const sz = run.fontSize || 24;
+      // Use: explicit run size > presentation default > 18pt fallback
+      const sz = run.fontSize || presentationDefaults.fontSize || 18;
       span.style.fontSize = sz + 'pt';
-      // Use run colour if set, otherwise default to black for better readability
-      span.style.color = run.fc || '#000000';
+      // Apply colour from: explicit run > presentation default > inherit
+      if (run.fc) span.style.color = run.fc;
+      else if (presentationDefaults.fontColor) span.style.color = presentationDefaults.fontColor;
       if (run.bold)      span.style.fontWeight = 'bold';
       if (run.italic)    span.style.fontStyle = 'italic';
       if (run.underline) span.style.textDecoration = 'underline';
