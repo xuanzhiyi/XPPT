@@ -1,0 +1,474 @@
+
+<h2 class="sr-only">PowerPoint viewer — upload a .pptx file to view slides</h2>
+<div id="app" style="font-family: 'Segoe UI', var(--font-sans), sans-serif; min-height: 500px; padding: 0;">
+
+<div id="toolbar" style="display:flex; align-items:center; gap:12px; padding:8px 16px; background:var(--color-background-secondary); border-bottom:0.5px solid var(--color-border-tertiary);">
+  <div style="display:flex; align-items:center; gap:6px; flex:1;">
+    <i class="ti ti-presentation" style="font-size:18px; color:var(--color-text-secondary);" aria-hidden="true"></i>
+    <span id="filename" style="font-size:13px; color:var(--color-text-secondary); font-weight:500;">No file loaded</span>
+  </div>
+  <div id="nav-controls" style="display:none; align-items:center; gap:8px;">
+    <button id="btn-prev" onclick="navigate(-1)" style="padding:4px 10px; font-size:13px;"><i class="ti ti-chevron-left" aria-hidden="true"></i></button>
+    <span id="slide-counter" style="font-size:13px; color:var(--color-text-secondary); min-width:60px; text-align:center;">1 / 1</span>
+    <button id="btn-next" onclick="navigate(1)" style="padding:4px 10px; font-size:13px;"><i class="ti ti-chevron-right" aria-hidden="true"></i></button>
+    <button id="btn-fullscreen" onclick="toggleFullscreen()" style="padding:4px 10px; font-size:13px;" title="Fullscreen"><i class="ti ti-arrows-maximize" aria-hidden="true"></i></button>
+  </div>
+  <label style="cursor:pointer;">
+    <span style="display:inline-flex; align-items:center; gap:6px; padding:5px 12px; font-size:13px; border:0.5px solid var(--color-border-secondary); border-radius:var(--border-radius-md); background:var(--color-background-primary); cursor:pointer;">
+      <i class="ti ti-upload" aria-hidden="true"></i> Open .pptx
+    </span>
+    <input type="file" id="file-input" accept=".pptx" style="display:none;" onchange="handleFile(event)">
+  </label>
+</div>
+
+<div id="main-area" style="display:flex; height:calc(100vh - 45px); min-height:460px;">
+
+  <div id="thumbnails-panel" style="display:none; width:160px; border-right:0.5px solid var(--color-border-tertiary); overflow-y:auto; background:var(--color-background-secondary); padding:8px; gap:8px; flex-direction:column;">
+  </div>
+
+  <div id="slide-area" style="flex:1; display:flex; align-items:center; justify-content:center; background:#3d3d3d; padding:24px; overflow:auto; position:relative;">
+    <div id="drop-zone" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; color:#aaa; text-align:center; padding:40px; border:2px dashed #666; border-radius:12px; width:100%; max-width:480px; cursor:pointer;" onclick="document.getElementById('file-input').click()">
+      <i class="ti ti-file-type-ppt" style="font-size:48px; color:#999;" aria-hidden="true"></i>
+      <div>
+        <div style="font-size:15px; color:#ddd; font-weight:500; margin-bottom:6px;">Drop a .pptx file here</div>
+        <div style="font-size:13px; color:#999;">or click to browse</div>
+      </div>
+      <div style="font-size:11px; color:#777; max-width:300px; line-height:1.5;">Slides render in-browser. Complex layouts, custom fonts, and animations have partial support.</div>
+    </div>
+    <div id="slide-canvas-wrap" style="display:none; position:relative;">
+      <div id="slide-canvas" style="position:relative; background:white; box-shadow:0 4px 32px rgba(0,0,0,0.5); overflow:hidden;"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+let slides = [];
+let currentSlide = 0;
+let slideW = 960, slideH = 540;
+
+function handleFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  document.getElementById('filename').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = async (ev) => {
+    try {
+      await parsePptx(ev.target.result);
+    } catch(err) {
+      alert('Could not parse file: ' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(ev.target.result);
+  reader.onload = async (ev) => {
+    try { await parsePptx(ev.target.result); } catch(err) { alert('Parse error: ' + err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+async function parsePptx(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  
+  const presXml = await zip.file('ppt/presentation.xml').async('string');
+  const presDoc = new DOMParser().parseFromString(presXml, 'application/xml');
+  const ns = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
+  
+  const sldSz = presDoc.querySelector('sldSz');
+  if (sldSz) {
+    slideW = parseInt(sldSz.getAttribute('cx') || 9144000) / 9525;
+    slideH = parseInt(sldSz.getAttribute('cy') || 5143500) / 9525;
+  } else { slideW = 960; slideH = 540; }
+
+  const slideFiles = [];
+  for (const key of Object.keys(zip.files)) {
+    if (/^ppt\/slides\/slide\d+\.xml$/.test(key)) slideFiles.push(key);
+  }
+  slideFiles.sort((a,b) => {
+    const na = parseInt(a.match(/\d+/)[0]);
+    const nb = parseInt(b.match(/\d+/)[0]);
+    return na - nb;
+  });
+
+  slides = [];
+  for (const sf of slideFiles) {
+    const xml = await zip.file(sf).async('string');
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    
+    let bgColor = '#FFFFFF';
+    const bgRef = doc.querySelector('bg bgPr');
+    if (bgRef) {
+      const solidFill = bgRef.querySelector('solidFill srgbClr');
+      if (solidFill) bgColor = '#' + solidFill.getAttribute('val');
+    }
+
+    const shapes = [];
+    const spTree = doc.querySelector('spTree');
+    if (!spTree) { slides.push({bgColor, shapes, bg:null}); continue; }
+    
+    for (const sp of spTree.querySelectorAll('sp')) {
+      const xfrm = sp.querySelector('xfrm');
+      if (!xfrm) continue;
+      const off = xfrm.querySelector('off');
+      const ext = xfrm.querySelector('ext');
+      if (!off||!ext) continue;
+      const x = parseInt(off.getAttribute('x')||0)/914400*96;
+      const y = parseInt(off.getAttribute('y')||0)/914400*96;
+      const w = parseInt(ext.getAttribute('cx')||0)/914400*96;
+      const h = parseInt(ext.getAttribute('cy')||0)/914400*96;
+      const rot = parseInt(xfrm.getAttribute('rot')||0)/60000;
+      const flipH = xfrm.getAttribute('flipH')==='1';
+      const flipV = xfrm.getAttribute('flipV')==='1';
+      
+      let fillColor = null;
+      const spFill = sp.querySelector('spPr solidFill srgbClr');
+      if (spFill) fillColor = '#'+spFill.getAttribute('val');
+      const lumMod = sp.querySelector('spPr solidFill srgbClr lumMod');
+      
+      let strokeColor = null;
+      const ln = sp.querySelector('spPr ln solidFill srgbClr');
+      if (ln) strokeColor = '#'+ln.getAttribute('val');
+      let strokeW = 1;
+      const lnEl = sp.querySelector('spPr ln');
+      if (lnEl) strokeW = Math.max(0.5, parseInt(lnEl.getAttribute('w')||12700)/12700);
+      
+      const paras = [];
+      for (const p of sp.querySelectorAll('txBody p')) {
+        const runs = [];
+        let pAlign = p.querySelector('pPr')?.getAttribute('algn')||'l';
+        pAlign = {l:'left',ctr:'center',r:'right',just:'justify'}[pAlign]||'left';
+        let pIndent = parseInt(p.querySelector('pPr')?.getAttribute('indent')||0)/914400*96;
+        let pLvl = parseInt(p.querySelector('pPr')?.getAttribute('lvl')||0);
+        let buChar = p.querySelector('pPr buChar')?.getAttribute('char')||null;
+        let buNone = p.querySelector('pPr buNone') ? true : false;
+        let lineSpacing = 1.2;
+        const lnSpc = p.querySelector('pPr lnSpc spcPct');
+        if (lnSpc) lineSpacing = parseInt(lnSpc.getAttribute('val')||120000)/100000;
+        const spcBef = p.querySelector('pPr spcBef spcPts');
+        const spaceBeforePt = spcBef ? parseInt(spcBef.getAttribute('val')||0)/100 : 0;
+        
+        for (const r of p.querySelectorAll('r')) {
+          const rPr = r.querySelector('rPr');
+          let fc = null;
+          const rFill = r.querySelector('rPr solidFill srgbClr');
+          if (rFill) fc = '#'+rFill.getAttribute('val');
+          const schemeClr = r.querySelector('rPr solidFill schemeClr');
+          let bold = rPr?.getAttribute('b')==='1';
+          let italic = rPr?.getAttribute('i')==='1';
+          let underline = rPr?.getAttribute('u') && rPr.getAttribute('u')!=='none';
+          let strike = rPr?.getAttribute('strike') && rPr.getAttribute('strike')!=='noStrike';
+          const szAttr = rPr?.getAttribute('sz');
+          const fontSize = szAttr ? parseInt(szAttr)/100 : null;
+          const fontEl = rPr?.querySelector('latin');
+          const fontFace = fontEl?.getAttribute('typeface')||null;
+          const t = r.querySelector('t')?.textContent||'';
+          runs.push({t, fc, bold, italic, underline, strike, fontSize, fontFace, schemeClr: schemeClr?.getAttribute('val')});
+        }
+        const br = p.querySelector('br');
+        paras.push({runs, align:pAlign, indent:pIndent, lvl:pLvl, buChar, buNone, lineSpacing, spaceBeforePt, hasBr:!!br});
+      }
+      
+      let txBodyVAlign = sp.querySelector('txBody bodyPr')?.getAttribute('anchor')||'t';
+      let txInsetL = parseInt(sp.querySelector('txBody bodyPr')?.getAttribute('lIns')||91440)/914400*96;
+      let txInsetR = parseInt(sp.querySelector('txBody bodyPr')?.getAttribute('rIns')||91440)/914400*96;
+      let txInsetT = parseInt(sp.querySelector('txBody bodyPr')?.getAttribute('tIns')||45720)/914400*96;
+      let txInsetB = parseInt(sp.querySelector('txBody bodyPr')?.getAttribute('bIns')||45720)/914400*96;
+      let autoFit = !!sp.querySelector('txBody bodyPr normAutofit, txBody bodyPr spAutoFit');
+      let wordWrap = sp.querySelector('txBody bodyPr')?.getAttribute('wrap')!=='none';
+      
+      const geomEl = sp.querySelector('spPr prstGeom');
+      const geom = geomEl?.getAttribute('prst')||'rect';
+      
+      shapes.push({type:'sp', x,y,w,h,rot,flipH,flipV, fillColor,strokeColor,strokeW, paras, txBodyVAlign, txInsetL,txInsetR,txInsetT,txInsetB, autoFit, wordWrap, geom});
+    }
+    
+    for (const pic of spTree.querySelectorAll('pic')) {
+      const blip = pic.querySelector('blipFill blip');
+      const rId = blip?.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','embed');
+      const xfrm = pic.querySelector('xfrm');
+      if (!xfrm||!rId) continue;
+      const off = xfrm.querySelector('off');
+      const ext = xfrm.querySelector('ext');
+      if(!off||!ext) continue;
+      const x = parseInt(off.getAttribute('x')||0)/914400*96;
+      const y = parseInt(off.getAttribute('y')||0)/914400*96;
+      const w = parseInt(ext.getAttribute('cx')||0)/914400*96;
+      const h = parseInt(ext.getAttribute('cy')||0)/914400*96;
+      const rot = parseInt(xfrm.getAttribute('rot')||0)/60000;
+      shapes.push({type:'pic', x,y,w,h,rot,rId,imgData:null});
+    }
+    
+    const relsPath = sf.replace('slides/slide','slides/_rels/slide').replace('.xml','.xml.rels');
+    const relsFile = zip.file(relsPath);
+    let imgMap = {};
+    if (relsFile) {
+      const relsXml = await relsFile.async('string');
+      const rDoc = new DOMParser().parseFromString(relsXml,'application/xml');
+      for (const rel of rDoc.querySelectorAll('Relationship')) {
+        const rid = rel.getAttribute('Id');
+        const target = rel.getAttribute('Target');
+        if (/\.(png|jpg|jpeg|gif|svg|emf|wmf)$/i.test(target)) {
+          const imgPath = target.startsWith('../') ? 'ppt/'+target.slice(3) : 'ppt/slides/'+target;
+          const imgFile = zip.file(imgPath);
+          if (imgFile) {
+            const imgBuf = await imgFile.async('base64');
+            const ext2 = target.split('.').pop().toLowerCase();
+            const mime = {png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',svg:'image/svg+xml',emf:'image/x-emf',wmf:'image/x-wmf'}[ext2]||'image/png';
+            imgMap[rid] = `data:${mime};base64,${imgBuf}`;
+          }
+        }
+      }
+    }
+    
+    for (const sh of shapes) {
+      if (sh.type==='pic' && sh.rId && imgMap[sh.rId]) sh.imgData = imgMap[sh.rId];
+    }
+    
+    slides.push({bgColor, shapes});
+  }
+  
+  currentSlide = 0;
+  renderThumbnails();
+  renderSlide(currentSlide);
+  
+  document.getElementById('drop-zone').style.display = 'none';
+  document.getElementById('slide-canvas-wrap').style.display = 'block';
+  document.getElementById('nav-controls').style.display = 'flex';
+  document.getElementById('thumbnails-panel').style.display = 'flex';
+}
+
+function emu2px(emu) { return emu / 914400 * 96; }
+
+function renderSlide(idx) {
+  if (idx < 0 || idx >= slides.length) return;
+  currentSlide = idx;
+  const sl = slides[idx];
+  const wrap = document.getElementById('slide-canvas-wrap');
+  const canvas = document.getElementById('slide-canvas');
+  
+  const areaEl = document.getElementById('slide-area');
+  const areaW = areaEl.clientWidth - 48;
+  const areaH = areaEl.clientHeight - 48;
+  const scaleW = areaW / slideW;
+  const scaleH = areaH / slideH;
+  const scale = Math.min(scaleW, scaleH, 1.5);
+  
+  const dispW = Math.round(slideW * scale);
+  const dispH = Math.round(slideH * scale);
+  
+  canvas.style.width = dispW + 'px';
+  canvas.style.height = dispH + 'px';
+  canvas.style.background = sl.bgColor || '#FFFFFF';
+  canvas.innerHTML = '';
+  
+  const inner = document.createElement('div');
+  inner.style.cssText = `position:absolute;top:0;left:0;width:${slideW}px;height:${slideH}px;transform:scale(${scale});transform-origin:top left;`;
+  
+  for (const sh of sl.shapes) {
+    if (sh.type === 'pic') {
+      if (!sh.imgData) continue;
+      const el = document.createElement('div');
+      el.style.cssText = `position:absolute;left:${sh.x}px;top:${sh.y}px;width:${sh.w}px;height:${sh.h}px;overflow:hidden;`;
+      if (sh.rot) el.style.transform = `rotate(${sh.rot}deg)`;
+      const img = document.createElement('img');
+      img.src = sh.imgData;
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+      el.appendChild(img);
+      inner.appendChild(el);
+      continue;
+    }
+    
+    if (sh.type !== 'sp') continue;
+    const el = document.createElement('div');
+    let transforms = [];
+    if (sh.rot) transforms.push(`rotate(${sh.rot}deg)`);
+    if (sh.flipH) transforms.push('scaleX(-1)');
+    if (sh.flipV) transforms.push('scaleY(-1)');
+    
+    el.style.cssText = `position:absolute;left:${sh.x}px;top:${sh.y}px;width:${sh.w}px;height:${sh.h}px;box-sizing:border-box;overflow:hidden;`;
+    if (transforms.length) el.style.transform = transforms.join(' ');
+    
+    if (sh.fillColor) {
+      el.style.backgroundColor = sh.fillColor;
+    }
+    if (sh.strokeColor && sh.strokeW > 0) {
+      el.style.border = `${sh.strokeW}px solid ${sh.strokeColor}`;
+    }
+    if (sh.geom === 'ellipse' || sh.geom === 'oval') el.style.borderRadius = '50%';
+    else if (sh.geom === 'roundRect') el.style.borderRadius = '8px';
+    
+    const hasText = sh.paras.some(p => p.runs.some(r => r.t.trim()));
+    if (hasText) {
+      const txDiv = document.createElement('div');
+      txDiv.style.cssText = `position:absolute;left:${sh.txInsetL}px;top:${sh.txInsetT}px;right:${sh.txInsetR}px;bottom:${sh.txInsetB}px;overflow:hidden;`;
+      if (sh.txBodyVAlign === 'ctr') {
+        txDiv.style.display = 'flex';
+        txDiv.style.flexDirection = 'column';
+        txDiv.style.justifyContent = 'center';
+      } else if (sh.txBodyVAlign === 'b') {
+        txDiv.style.display = 'flex';
+        txDiv.style.flexDirection = 'column';
+        txDiv.style.justifyContent = 'flex-end';
+      }
+      
+      for (const para of sh.paras) {
+        const pEl = document.createElement('p');
+        pEl.style.cssText = `margin:0;padding:0;text-align:${para.align};word-wrap:${sh.wordWrap?'break-word':'nowrap'};`;
+        if (para.spaceBeforePt > 0) pEl.style.marginTop = para.spaceBeforePt + 'pt';
+        if (para.lvl > 0) pEl.style.paddingLeft = (para.lvl * 20) + 'px';
+        if (para.buChar && !para.buNone) {
+          pEl.style.paddingLeft = '16px';
+          pEl.style.textIndent = '-16px';
+        }
+        
+        if (!para.runs.length || !para.runs.some(r=>r.t)) {
+          pEl.innerHTML = '&nbsp;';
+          txDiv.appendChild(pEl);
+          continue;
+        }
+        
+        if (para.buChar && !para.buNone) {
+          const bSpan = document.createElement('span');
+          bSpan.textContent = para.buChar + ' ';
+          pEl.appendChild(bSpan);
+        }
+        
+        for (const run of para.runs) {
+          if (!run.t && !para.hasBr) continue;
+          const span = document.createElement('span');
+          const sz = run.fontSize || 18;
+          span.style.fontSize = sz + 'pt';
+          if (run.fc) span.style.color = run.fc;
+          else if (run.schemeClr) {
+            const schemeMap = {dk1:'#000000',lt1:'#FFFFFF',dk2:'#1F3864',lt2:'#E7E6E6',accent1:'#4472C4',accent2:'#ED7D31',accent3:'#A9D18E',accent4:'#FFC000',accent5:'#5B9BD5',accent6:'#70AD47'};
+            span.style.color = schemeMap[run.schemeClr]||'#000000';
+          }
+          if (run.bold) span.style.fontWeight = 'bold';
+          if (run.italic) span.style.fontStyle = 'italic';
+          if (run.underline) span.style.textDecoration = 'underline';
+          if (run.strike) span.style.textDecoration = 'line-through';
+          if (run.fontFace && run.fontFace !== '+mj-lt' && run.fontFace !== '+mn-lt') {
+            span.style.fontFamily = `"${run.fontFace}", Calibri, sans-serif`;
+          } else {
+            span.style.fontFamily = 'Calibri, "Segoe UI", sans-serif';
+          }
+          span.style.lineHeight = para.lineSpacing;
+          span.textContent = run.t;
+          pEl.appendChild(span);
+        }
+        txDiv.appendChild(pEl);
+      }
+      el.appendChild(txDiv);
+    }
+    inner.appendChild(el);
+  }
+  
+  canvas.appendChild(inner);
+  
+  document.getElementById('slide-counter').textContent = `${idx+1} / ${slides.length}`;
+  document.getElementById('btn-prev').disabled = idx === 0;
+  document.getElementById('btn-next').disabled = idx === slides.length - 1;
+  
+  updateThumbnailHighlight();
+}
+
+function renderThumbnails() {
+  const panel = document.getElementById('thumbnails-panel');
+  panel.innerHTML = '';
+  slides.forEach((sl, i) => {
+    const thumb = document.createElement('div');
+    thumb.id = 'thumb-'+i;
+    thumb.style.cssText = `cursor:pointer;border-radius:4px;overflow:hidden;border:2px solid transparent;position:relative;flex-shrink:0;`;
+    thumb.onclick = () => renderSlide(i);
+    
+    const numLabel = document.createElement('div');
+    numLabel.textContent = i+1;
+    numLabel.style.cssText = 'font-size:10px;color:var(--color-text-secondary);text-align:center;margin-bottom:3px;';
+    
+    const miniSlide = document.createElement('div');
+    miniSlide.style.cssText = `width:136px;height:77px;background:${sl.bgColor||'#fff'};position:relative;overflow:hidden;border-radius:2px;`;
+    
+    const scale = 136/slideW;
+    const tInner = document.createElement('div');
+    tInner.style.cssText = `position:absolute;top:0;left:0;width:${slideW}px;height:${slideH}px;transform:scale(${scale});transform-origin:top left;pointer-events:none;`;
+    
+    for (const sh of sl.shapes) {
+      if (sh.type === 'pic' && sh.imgData) {
+        const d = document.createElement('div');
+        d.style.cssText = `position:absolute;left:${sh.x}px;top:${sh.y}px;width:${sh.w}px;height:${sh.h}px;overflow:hidden;`;
+        const img = document.createElement('img');
+        img.src = sh.imgData;
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+        d.appendChild(img);
+        tInner.appendChild(d);
+        continue;
+      }
+      if (sh.type !== 'sp') continue;
+      const d = document.createElement('div');
+      d.style.cssText = `position:absolute;left:${sh.x}px;top:${sh.y}px;width:${sh.w}px;height:${sh.h}px;box-sizing:border-box;overflow:hidden;`;
+      if (sh.fillColor) d.style.background = sh.fillColor;
+      if (sh.strokeColor) d.style.border = `1px solid ${sh.strokeColor}`;
+      if (sh.geom==='ellipse'||sh.geom==='oval') d.style.borderRadius='50%';
+      const firstRunWithText = sh.paras.flatMap(p=>p.runs).find(r=>r.t.trim());
+      if (firstRunWithText) {
+        d.style.display='flex'; d.style.alignItems='center'; d.style.justifyContent='center';
+        const sp = document.createElement('span');
+        sp.style.cssText = `font-size:${(firstRunWithText.fontSize||14)*0.6}pt;color:${firstRunWithText.fc||'#000'};overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:2px;font-family:Calibri,sans-serif;`;
+        if (firstRunWithText.bold) sp.style.fontWeight='bold';
+        sp.textContent = sh.paras.map(p=>p.runs.map(r=>r.t).join('')).join(' ').trim().slice(0,40);
+        d.appendChild(sp);
+      }
+      tInner.appendChild(d);
+    }
+    miniSlide.appendChild(tInner);
+    
+    const wrapper = document.createElement('div');
+    wrapper.appendChild(numLabel);
+    wrapper.appendChild(miniSlide);
+    thumb.appendChild(wrapper);
+    panel.appendChild(thumb);
+  });
+  updateThumbnailHighlight();
+}
+
+function updateThumbnailHighlight() {
+  slides.forEach((_,i) => {
+    const t = document.getElementById('thumb-'+i);
+    if (!t) return;
+    t.style.border = i===currentSlide ? '2px solid #2B7CD3' : '2px solid transparent';
+  });
+  const active = document.getElementById('thumb-'+currentSlide);
+  if (active) active.scrollIntoView({block:'nearest', behavior:'smooth'});
+}
+
+function navigate(dir) {
+  renderSlide(currentSlide + dir);
+}
+
+function toggleFullscreen() {
+  const el = document.getElementById('slide-canvas');
+  if (!document.fullscreenElement) {
+    el.requestFullscreen?.();
+  } else {
+    document.exitFullscreen?.();
+  }
+}
+
+document.getElementById('slide-area').addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; });
+document.getElementById('slide-area').addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (!file || !file.name.endsWith('.pptx')) return;
+  document.getElementById('filename').textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = async (ev) => { try { await parsePptx(ev.target.result); } catch(err) { alert('Parse error: '+err.message); } };
+  reader.readAsArrayBuffer(file);
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key==='ArrowRight'||e.key==='ArrowDown') navigate(1);
+  if (e.key==='ArrowLeft'||e.key==='ArrowUp') navigate(-1);
+});
+
+window.addEventListener('resize', () => { if (slides.length) renderSlide(currentSlide); });
+</script>
