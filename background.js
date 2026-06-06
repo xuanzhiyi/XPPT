@@ -1,17 +1,25 @@
 // XPPT background service worker
 // Intercepts .pptx navigations and downloads → redirects to the viewer page.
 
-const PPTX_RE = /\.pptx(\?[^#]*)?$/i;
+// Match .pptx only in the URL path (before any ? or #), not in query-string values.
+const PPTX_PATH_RE = /\.pptx([?#]|$)/i;
 
 // Track tabs we're already redirecting to avoid double-firing.
 const redirecting = new Set();
 
+// The base URL of our viewer page — never redirect this.
+const VIEWER_BASE = chrome.runtime.getURL('pptx_viewer.html');
+
 function viewerUrl(pptxUrl) {
-  return chrome.runtime.getURL('pptx_viewer.html') + '?url=' + encodeURIComponent(pptxUrl);
+  return VIEWER_BASE + '?url=' + encodeURIComponent(pptxUrl);
 }
 
 function maybeRedirect(tabId, url) {
-  if (!PPTX_RE.test(url)) return;
+  if (!PPTX_PATH_RE.test(url)) return;
+  // Never redirect our own viewer page (guards against double-wrapping).
+  if (url.startsWith(VIEWER_BASE)) return;
+  // Skip internal Chrome/extension URLs.
+  if (url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return;
   if (redirecting.has(tabId)) return;
   redirecting.add(tabId);
   chrome.tabs.update(tabId, { url: viewerUrl(url) }, () => {
@@ -34,7 +42,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 // 3. downloads.onCreated catches download-triggered .pptx files
 chrome.downloads.onCreated.addListener((item) => {
-  if (PPTX_RE.test(item.url) || PPTX_RE.test(item.filename || '')) {
+  if (PPTX_PATH_RE.test(item.url) || PPTX_PATH_RE.test(item.filename || '')) {
     chrome.downloads.cancel(item.id, () => {
       chrome.downloads.erase({ id: item.id });
       chrome.tabs.create({ url: viewerUrl(item.url) });

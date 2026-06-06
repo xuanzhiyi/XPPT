@@ -20,11 +20,6 @@
 <p>Click a <code>.pptx</code> link in any page and XPPT intercepts it automatically.</p>
 <button id="open-viewer">📂 Open .pptx file…</button>
 <p class="hint">Opens the viewer — then use the file picker inside to load your file.</p>
-<script>
-document.getElementById('open-viewer').addEventListener('click', () => {
-  chrome.tabs.create({ url: chrome.runtime.getURL('pptx_viewer.html') });
-  window.close();
-});
-</script>
+<script src="popup.js"></script>
 </body>
 </html>
