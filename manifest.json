@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "XPPT – PowerPoint Viewer",
+  "version": "1.0.0",
+  "description": "Open .pptx files directly in Chrome without Microsoft PowerPoint.",
+  "permissions": [
+    "downloads",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "XPPT – Open a .pptx file",
+    "default_popup": "popup.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["pptx_viewer.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
